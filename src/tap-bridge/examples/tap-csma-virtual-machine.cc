@@ -62,26 +62,29 @@
 #include "ns3/network-module.h"
 #include "ns3/tap-bridge-module.h"
 
+#include <chrono>
+#include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <iostream>
+#include <thread>
 
 using namespace ns3;
 
 NS_LOG_COMPONENT_DEFINE("TapCsmaVirtualMachineExample");
 
-int
-main(int argc, char* argv[])
-{
-    CommandLine cmd(__FILE__);
-    cmd.Parse(argc, argv);
+CsmaHelper csma;
 
+void
+createSimulation(int delay, int n_nodes)
+{
     //
     // We are interacting with the outside, real, world.  This means we have to
     // interact in real-time and therefore means we have to use the real-time
     // simulator and take the time to calculate checksums.
     //
     GlobalValue::Bind("SimulatorImplementationType", StringValue("ns3::RealtimeSimulatorImpl"));
-    GlobalValue::Bind("ChecksumEnabled", BooleanValue(true));
+    GlobalValue::Bind("ChecksumEnabled", BooleanValue(false));
 
     //
     // Create two ghost nodes.  The first will represent the virtual machine host
@@ -89,7 +92,7 @@ main(int argc, char* argv[])
     // the right side.
     //
     NodeContainer nodes;
-    nodes.Create(2);
+    nodes.Create(n_nodes);
 
     //
     // Use a CsmaHelper to get a CSMA channel created, and the needed net
@@ -98,7 +101,13 @@ main(int argc, char* argv[])
     //
     // ./ns3 run "tap-csma-virtual-machine --ns3::CsmaChannel::DataRate=10000000"
     //
-    CsmaHelper csma;
+    // DataRate x("10Gbps");
+    // double nBits = x*ns3::Seconds(19.2);
+    // uint32_t nBytes = 20;
+    // double txtime = x.CalclulateTxTime(nBytes);
+    // csma.SetChannelAttribute("DataRate", DataRateValue(x));
+    // csma.SetChannelAttribute("DataRate", DataRateValue(10000000));
+    csma.SetChannelAttribute("Delay", TimeValue(MilliSeconds(delay)));
     NetDeviceContainer devices = csma.Install(nodes);
 
     //
@@ -109,23 +118,97 @@ main(int argc, char* argv[])
     // tap to the specified CSMA device.
     //
     TapBridgeHelper tapBridge;
-    tapBridge.SetAttribute("Mode", StringValue("UseBridge"));
-    tapBridge.SetAttribute("DeviceName", StringValue("tap-left"));
-    tapBridge.Install(nodes.Get(0), devices.Get(0));
+    tapBridge.SetAttribute("Mode", StringValue("UseLocal"));
 
-    //
-    // Connect the right side tap to the right side CSMA device on the right-side
-    // ghost node.
-    //
-    tapBridge.SetAttribute("DeviceName", StringValue("tap-right"));
-    tapBridge.Install(nodes.Get(1), devices.Get(1));
+    for (int i = 0; i < n_nodes; i++)
+    {
+        char str[100];
+        sprintf(str, "tap%d-ns", i);
+        tapBridge.SetAttribute("DeviceName", StringValue(str));
+        tapBridge.Install(nodes.Get(i), devices.Get(i));
+    }
 
-    //
-    // Run the simulation for ten minutes to give the user time to play around
-    //
-    Simulator::Stop(Seconds(600.));
+    // Simulator::Stop(Seconds(600.));
     Simulator::Run();
     Simulator::Destroy();
+}
+
+void
+ns3task(int delay, int n_nodes)
+{
+    createSimulation(delay, n_nodes);
+}
+
+void
+input()
+{
+    char in[1024];
+    for (;;)
+    {
+        scanf("%s", in);
+        printf("%s\n", in);
+    }
+}
+
+pthread_t native_handler;
+
+void
+start_thread(int delay, int n_nodes)
+{
+    std::thread thrd(ns3task, delay, n_nodes);
+    native_handler = thrd.native_handle();
+    thrd.detach();
+}
+
+void
+stop_thread()
+{
+    pthread_cancel(native_handler);
+    Simulator::Stop();
+    Simulator::Destroy();
+}
+
+void
+restart_thread(int delay, int n_nodes)
+{
+    stop_thread();
+    start_thread(delay, n_nodes);
+}
+
+int
+main(int argc, char* argv[])
+{
+    CommandLine cmd(__FILE__);
+    cmd.Parse(argc, argv);
+
+    int n_nodes = 3;
+    int delay = 0;
+    start_thread(delay, n_nodes);
+
+    char in[1024];
+    for (;;)
+    {
+        printf("> ");
+        scanf("%s", in);
+        if (strcmp(in, "stop") == 0)
+        {
+            printf("stopping\n");
+            stop_thread();
+        }
+        if (strcmp(in, "chgd") == 0)
+        {
+            printf("delay > ");
+            scanf("%d", &delay);
+            restart_thread(delay, n_nodes);
+        }
+        if (strcmp(in, "chgn") == 0)
+        {
+            printf("n nodes > ");
+            scanf("%d", &n_nodes);
+            restart_thread(delay, n_nodes);
+        }
+        in[0] = 0;
+    }
 
     return 0;
 }
